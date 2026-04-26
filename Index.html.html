@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SAC → S/4 Navigator</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap');
+  *{margin:0;padding:0;box-sizing:border-box;}
+  body{font-family:'IBM Plex Sans',sans-serif;background:#2C4570;display:flex;align-items:center;justify-content:center;min-height:100vh;}
+  .card{background:#fff;border-radius:12px;padding:32px;max-width:500px;width:90%;text-align:center;box-shadow:0 8px 32px rgba(0,0,0,0.3);}
+  .icon{font-size:44px;margin-bottom:12px;}
+  .title{font-size:17px;font-weight:600;color:#2C4570;margin-bottom:6px;}
+  .sub{font-size:12.5px;color:#6B7280;margin-bottom:16px;line-height:1.6;}
+  .detail{background:#E8EDF5;border-radius:8px;padding:10px 14px;margin-bottom:16px;text-align:left;}
+  .detail-row{display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px;}
+  .detail-label{color:#6B7280;}
+  .detail-value{color:#2C4570;font-weight:500;}
+  .badge{border-radius:20px;padding:3px 12px;font-size:11px;font-weight:500;display:inline-block;margin-bottom:10px;}
+  .badge-ibp{background:#FDEBD0;color:#854F0B;}
+  .badge-calc{background:#E8EDF5;color:#3D5A8A;}
+  .badge-s4{background:#EAF3DE;color:#3B6D11;}
+  .spinner{border:3px solid #E8EDF5;border-top:3px solid #F5A623;border-radius:50%;width:38px;height:38px;animation:spin 0.8s linear infinite;margin:0 auto 14px;}
+  @keyframes spin{to{transform:rotate(360deg);}}
+  a.manual{color:#3D5A8A;font-size:11px;}
+</style>
+</head>
+<body>
+<div class="card" id="card">
+  <div class="spinner"></div>
+  <div class="title">Navigating to S/4HANA...</div>
+</div>
+
+<script>
+const S4 = "https://vhtrdps4ci.sap.tridentseafoods.com:44300/sap/bc/ui2/flp?sap-client=100&sap-language=EN#";
+
+// ── Exact KEYFIGURE member IDs from TRIDENT_IBP_SPDB_M03 ──────
+const MAP = {
+  // ✅ S/4 sourced — direct Fiori drill-through
+  "STOCK_OH": {
+    source:"s4", icon:"📦",
+    label:"Stock On Hand",
+    app:"Material-displayStockOverview",
+    params:(m,p)=>`Material=${m}&Plant=${p}`
+  },
+  "COMMIT_SO": {
+    source:"s4", icon:"📋",
+    label:"Committed Sales Order",
+    app:"SalesOrder-displayFactSheet",
+    params:(m,p)=>`Material=${m}&Plant=${p}`
+  },
+  "INBOUND_TRANS": {
+    source:"s4", icon:"🚚",
+    label:"Inbound Transport Supply",
+    app:"PurchaseOrder-displayFactSheet",
+    params:(m,p)=>`Material=${m}&Plant=${p}`
+  },
+  "INBOUND_PROD": {
+    source:"s4", icon:"🔧",
+    label:"Inbound Production Orders",
+    app:"ProductionOrder-displayFactSheet",
+    params:(m,p)=>`Material=${m}&Plant=${p}`
+  },
+  "S4_PLANNED": {
+    source:"s4", icon:"📅",
+    label:"S4 Planned Order",
+    app:"PlannedOrder-displayFactSheet",
+    params:(m,p)=>`Material=${m}&Plant=${p}`
+  },
+
+  // 🟡 IBP sourced — no S/4 line item drill-through
+  "FINAL_FCST_SUPPLY": { source:"ibp", icon:"📈", label:"Final Forecast to Supply (IBP)" },
+  "DEP_PROD_DEMAND":   { source:"ibp", icon:"📈", label:"Dependent Production Demand (IBP)" },
+  "IBP_FCST_FWD1":     { source:"ibp", icon:"📊", label:"IBP Forecast Forward +1 Week (IBP)" },
+  "IBP_FCST_FWD2":     { source:"ibp", icon:"📊", label:"IBP Forecast Forward +2 Weeks (IBP)" },
+  "IBP_FCST_FWD3":     { source:"ibp", icon:"📊", label:"IBP Forecast Forward +3 Weeks (IBP)" },
+  "COMMIT_SO_FWD1":    { source:"ibp", icon:"📊", label:"Committed SO Forward +1 Week (IBP)" },
+  "COMMIT_SO_FWD2":    { source:"ibp", icon:"📊", label:"Committed SO Forward +2 Weeks (IBP)" },
+  "COMMIT_SO_FWD3":    { source:"ibp", icon:"📊", label:"Committed SO Forward +3 Weeks (IBP)" },
+  "CONS_PROD":         { source:"ibp", icon:"🏭", label:"IBP Consensus Production Plan (IBP)" },
+
+  // 🔵 SAC calculated — no source system drill-through
+  "PROJ_STOCK": { source:"calc", icon:"🧮", label:"Projected Stock",              calc:"DA_COMPUTE_PROJ_STOCK — Step 2" },
+  "PROJ_POC":   { source:"calc", icon:"🧮", label:"Projected Periods of Coverage",calc:"DA_COMPUTE_PROJ_STOCK — Step 3" },
+  "PROJ_DOH":   { source:"calc", icon:"📅", label:"Days on Hand (DOH)",           calc:"DA_COMPUTE_PROJ_STOCK — Step 4" },
+  "DOH_TARGET": { source:"calc", icon:"🎯", label:"DOH Target",                   calc:"Loaded from IBP Custom Location Product table" },
+};
+
+function p(name){ return new URLSearchParams(window.location.search).get(name)||""; }
+
+function show(html){ document.getElementById("card").innerHTML=html; }
+
+window.onload=function(){
+  const mat  = p("material");
+  const plant= p("plant");
+  const bdd  = p("bdd");
+
+  if(!bdd){
+    show(`<div class="icon">🔗</div>
+      <div class="title">SAC → S/4 Navigator</div>
+      <div class="sub">No Business Data Domain received. Please click a cell directly in the SAC Days on Hand table.</div>`);
+    return;
+  }
+
+  const e = MAP[bdd];
+
+  if(!e){
+    show(`<div class="icon">❓</div>
+      <div class="title">Unknown Data Domain</div>
+      <div class="sub">No mapping found for: <strong>${bdd}</strong><br>Please contact your SAC project team to add this mapping.</div>
+      <div class="detail">
+        <div class="detail-row"><span class="detail-label">Material</span><span class="detail-value">${mat}</span></div>
+        <div class="detail-row"><span class="detail-label">Plant</span><span class="detail-value">${plant}</span></div>
+        <div class="detail-row"><span class="detail-label">BDD Code</span><span class="detail-value">${bdd}</span></div>
+      </div>`);
+    return;
+  }
+
+  if(e.source==="ibp"){
+    show(`<div class="icon">${e.icon}</div>
+      <span class="badge badge-ibp">IBP Data Source</span>
+      <div class="title">${e.label}</div>
+      <div class="sub">This data originates from <strong>SAP IBP planning area TSFACTIVE3</strong>.<br>IBP data is not available as a line-item drill-through in S/4HANA.</div>
+      <div class="detail">
+        <div class="detail-row"><span class="detail-label">Material</span><span class="detail-value">${mat}</span></div>
+        <div class="detail-row"><span class="detail-label">Plant</span><span class="detail-value">${plant}</span></div>
+        <div class="detail-row"><span class="detail-label">Source</span><span class="detail-value">SAP IBP · TSFACTIVE3</span></div>
+      </div>
+      <p style="font-size:11.5px;color:#6B7280;">To review IBP forecast data, open the IBP Fiori Planning app directly.</p>`);
+    return;
+  }
+
+  if(e.source==="calc"){
+    show(`<div class="icon">${e.icon}</div>
+      <span class="badge badge-calc">SAC Calculated Value</span>
+      <div class="title">${e.label}</div>
+      <div class="sub">This value is <strong>calculated inside SAC</strong> and does not have a corresponding line-item view in S/4HANA or IBP.</div>
+      <div class="detail">
+        <div class="detail-row"><span class="detail-label">Material</span><span class="detail-value">${mat}</span></div>
+        <div class="detail-row"><span class="detail-label">Plant</span><span class="detail-value">${plant}</span></div>
+        <div class="detail-row"><span class="detail-label">Calculated by</span><span class="detail-value">${e.calc}</span></div>
+      </div>`);
+    return;
+  }
+
+  if(e.source==="s4"){
+    const url = S4 + e.app + "?" + e.params(mat, plant);
+    show(`<div class="spinner" style="border:3px solid #E8EDF5;border-top-color:#F5A623;border-radius:50%;width:38px;height:38px;animation:spin 0.8s linear infinite;margin:0 auto 14px;"></div>
+      <span class="badge badge-s4">S/4HANA</span>
+      <div class="title">Opening ${e.icon} ${e.label}</div>
+      <div class="sub">Navigating to S/4HANA for Material <strong>${mat}</strong> at Plant <strong>${plant}</strong></div>
+      <div class="detail">
+        <div class="detail-row"><span class="detail-label">Material</span><span class="detail-value">${mat}</span></div>
+        <div class="detail-row"><span class="detail-label">Plant</span><span class="detail-value">${plant}</span></div>
+        <div class="detail-row"><span class="detail-label">Fiori App</span><span class="detail-value">${e.label}</span></div>
+      </div>
+      <p><a class="manual" href="${url}">If not redirected automatically, click here</a></p>`);
+    const s=document.createElement('style');
+    s.textContent='@keyframes spin{to{transform:rotate(360deg);}}';
+    document.head.appendChild(s);
+    setTimeout(()=>{ window.location.href=url; },1200);
+    return;
+  }
+};
+</script>
+</body>
+</html>
